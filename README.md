@@ -23,7 +23,7 @@ func main() {
 	// Load proxies from file, expects ip:port per line
 	pool.LoadProxies("./proxies.txt")
 
-	// pool.Get() waits for a proxy from the pool to become available and retrying forever till it gets a 200 response
+	// pool.Get() waits for a proxy from the pool to become available and retrying forever
 	HTML := pool.Get("http://example.com/something")
 	fmt.Println(HTML)
 
