@@ -48,7 +48,11 @@ func (proxy *Proxy) Create(testURL string, wg *sync.WaitGroup) {
 	for _, version := range socksVersions {
 		proxy.URL = fmt.Sprintf("socks%d://%s:%d", version, proxy.ip, proxy.port)
 		proxy.dial = socks.Dial(proxy.URL + "?timeout=10s")
-		proxy.transport = &http.Transport{Dial: proxy.dial}
+		proxy.transport = &http.Transport{
+			Dial:            proxy.dial,
+			MaxIdleConns:    10,
+			IdleConnTimeout: 30 * time.Second,
+		}
 		proxy.client = &http.Client{Transport: proxy.transport, Timeout: 10 * time.Second}
 		_, err := proxy.Get(testURL)
 		if err == nil {
