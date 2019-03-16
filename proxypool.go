@@ -47,12 +47,12 @@ func (proxy *Proxy) Create(testURL string, wg *sync.WaitGroup) {
 	socksVersions := [2]int{5, 4}
 	for _, version := range socksVersions {
 		proxy.URL = fmt.Sprintf("socks%d://%s:%d", version, proxy.ip, proxy.port)
-		proxy.dial = socks.Dial(proxy.URL + "?timeout=10s")
+		proxy.dial = socks.Dial(proxy.URL + "?timeout=20s")
 		proxy.transport = &http.Transport{
 			Dial:              proxy.dial,
 			DisableKeepAlives: true,
 		}
-		proxy.client = &http.Client{Transport: proxy.transport, Timeout: 10 * time.Second}
+		proxy.client = &http.Client{Transport: proxy.transport, Timeout: 20 * time.Second}
 		_, err := proxy.Get(testURL)
 		if err == nil {
 			break
@@ -63,9 +63,11 @@ func (proxy *Proxy) Create(testURL string, wg *sync.WaitGroup) {
 
 // Get fetchs an URL with the given proxy and returns the body text
 func (proxy *Proxy) Get(url string) ([]byte, error) {
+	proxy.lastRequest = time.Now()
 	resp, err := proxy.client.Get(url)
 	if err != nil {
 		proxy.Alive = false
+		fmt.Println(err)
 		return nil, fmt.Errorf("HTTP request failed: %s", err)
 	}
 	defer resp.Body.Close()
@@ -80,7 +82,6 @@ func (proxy *Proxy) Get(url string) ([]byte, error) {
 		proxy.Alive = false
 		return nil, fmt.Errorf("test URL replied with HTTP code %d", resp.StatusCode)
 	}
-
 	proxy.Alive = true
 	return buf, nil
 }
@@ -88,6 +89,9 @@ func (proxy *Proxy) Get(url string) ([]byte, error) {
 // GetAvailableProxy returns an available proxy from the pool.
 func (pool *ProxyPool) GetAvailableProxy() (*Proxy, error) {
 	for i := range pool.proxies {
+		if time.Since(pool.proxies[i].lastRequest).Seconds() > float64(pool.RetestDelay) && !pool.proxies[i].Alive {
+			go pool.proxies[i].Get(pool.TestURL)
+		}
 		if time.Since(pool.proxies[i].lastRequest).Seconds() > float64(pool.RateLimit) && pool.proxies[i].Alive {
 			return pool.proxies[i], nil
 		}
@@ -109,6 +113,7 @@ func (pool *ProxyPool) LoadProxies(path string) error {
 	}
 	defer file.Close()
 
+	var proxies []*Proxy
 	scanner := bufio.NewScanner(file)
 	var wg sync.WaitGroup
 	for scanner.Scan() {
@@ -116,18 +121,24 @@ func (pool *ProxyPool) LoadProxies(path string) error {
 		ip := line[0]
 		port, _ := strconv.Atoi(line[1])
 		proxy := Proxy{ip: ip, port: port}
-		pool.proxies = append(pool.proxies, &proxy)
+		proxies = append(proxies, &proxy)
 
 		wg.Add(1)
 		go proxy.Create(pool.TestURL, &wg)
 	}
 	wg.Wait()
 
+	for _, p := range proxies {
+		if p.Alive {
+			pool.proxies = append(pool.proxies, p)
+		}
+	}
+
 	if err := scanner.Err(); err != nil {
 		return err
 	}
 
-	pool.updateCounts()
+	pool.UpdateCounts()
 	return nil
 }
 
@@ -138,24 +149,15 @@ func (pool *ProxyPool) Get(url string) []byte {
 		if err == nil {
 			r, reqErr := proxy.Get(url)
 			if reqErr == nil {
-				pool.updateCounts()
 				return r
 			}
 		}
+		time.Sleep(time.Second)
 	}
 }
 
-// Test tests all proxies in the pool that are unavailable and their last request time is older than the Pool's RetestDelay
-func (pool *ProxyPool) Test() {
-	for i := range pool.proxies {
-		if time.Since(pool.proxies[i].lastRequest).Seconds() > float64(pool.RetestDelay) && !pool.proxies[i].Alive {
-			pool.proxies[i].Get(pool.TestURL)
-		}
-	}
-}
-
-// updateCounts updates the pool counters
-func (pool *ProxyPool) updateCounts() {
+// UpdateCounts updates the pool counters
+func (pool *ProxyPool) UpdateCounts() {
 	var alive, available int
 	for i := range pool.proxies {
 		if pool.proxies[i].Alive {
